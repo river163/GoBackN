@@ -7,7 +7,7 @@ def main():
     config = Configuration("config.ini")
     server = Server(config)
     server.start()
-    client = Client()
+    client = Client(config)
 
     try:
         while True:
