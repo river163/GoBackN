@@ -9,7 +9,7 @@ from pdu import PDU
 class Server:
     def __init__(self, config: Configuration):
         self.config = config
-        self.host = "0.0.0.0"
+        self.host = self._get_local_ip()
         self.port = config.udp_port
         self.server_socket = None
         self.running = False
@@ -24,6 +24,14 @@ class Server:
         self.running = False
         if self.server_socket:
             self.server_socket.close()
+
+    def _get_local_ip(self):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                return s.getsockname()[0]
+        except Exception:
+            return socket.gethostbyname(socket.gethostname())
 
     def _server_loop(self):
         try:
