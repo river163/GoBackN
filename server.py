@@ -31,80 +31,88 @@ class Server:
                 s.connect(("8.8.8.8", 80))
                 return s.getsockname()[0]
         except Exception:
-            return socket.gethostbyname(socket.gethostname())
+            return "0.0.0.0"
 
     def _server_loop(self):
         try:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.server_socket.bind((self.host, self.port))
-            print(f"Go-Back-N Server started on {self.host}:{self.port}")
+            print(f"🖥️ Go-Back-N Server started on {self.host}:{self.port}")
 
             while self.running:
-                data, addr = self.server_socket.recvfrom(1024)
-                filename = data.decode().strip()
-                print(f"Received request for '{filename}' from {addr}")
-
-                if not os.path.exists(filename):
-                    error_msg = f"ERROR:FILE_NOT_FOUND:{filename}"
-                    self.server_socket.sendto(error_msg.encode(), addr)
-                    continue
-
-                Thread(target=self._handle_file_transfer, args=(filename, addr)).start()
+                try:
+                    data, addr = self.server_socket.recvfrom(1024)
+                    filename = data.decode().strip()
+                    print(f"📥 Received request for '{filename}' from {addr}")
+                    Thread(target=self._handle_file_transfer, args=(filename, addr)).start()
+                except OSError:
+                    break
 
         except Exception as e:
             if self.running:
-                print(f"Server error: {e}")
+                print(f"❌ Server error: {e}")
+        finally:
+            self.server_socket.close()
 
     def _handle_file_transfer(self, filename: str, client_addr: tuple):
         try:
-            # 读取文件并分块
+            if not os.path.exists(filename):
+                error_msg = f"ERROR:FILE_NOT_FOUND:{filename}"
+                self.server_socket.sendto(error_msg.encode(), client_addr)
+                return
+
             with open(filename, "rb") as f:
                 file_data = f.read()
-            chunks = [file_data[i:i+self.config.data_size] for i in range(0, len(file_data), self.config.data_size)]
 
-            # Go-Back-N 参数
-            base = self.config.init_seq_no
-            next_seq = base
+            # 分块并填充数据
+            chunks = []
+            for i in range(0, len(file_data), self.config.data_size):
+                chunk = file_data[i:i+self.config.data_size]
+                if len(chunk) < self.config.data_size:
+                    chunk += b'\x00' * (self.config.data_size - len(chunk))
+                chunks.append(chunk)
+
+            total_pdus = len(chunks)
             window_size = self.config.sw_size
-            pdus = [PDU(i, chunk) for i, chunk in enumerate(chunks)]
-            total_pdus = len(pdus)
-            last_ack = base - 1
+            base = 0
+            next_seq_num = 0
             timer = None
 
             while base < total_pdus:
-                # 发送窗口内的帧
-                while next_seq < min(base + window_size, total_pdus):
-                    if random.randint(1, 100) > self.config.lost_rate:  # 模拟丢包
-                        pdu = pdus[next_seq]
+                # 发送窗口内的数据包
+                while next_seq_num < min(base + window_size, total_pdus):
+                    if random.randint(1, 100) > self.config.lost_rate:
+                        pdu = PDU(next_seq_num, chunks[next_seq_num])
                         self.server_socket.sendto(pdu.encode(), client_addr)
-                        print(f"Sent PDU {next_seq} to {client_addr}")
-                    next_seq += 1
+                        print(f"📤 Sent PDU {next_seq_num} to {client_addr}")
+                    next_seq_num += 1
 
-                # 启动定时器
+                # 设置超时计时器
                 if timer is None:
                     timer = time.time()
 
-                # 接收 ACK
+                # 等待ACK
                 try:
                     self.server_socket.settimeout(0.1)
                     ack_data, _ = self.server_socket.recvfrom(1024)
-                    ack_seq = int(ack_data.decode())
-                    print(f"Received ACK {ack_seq}")
+                    ack_num = int(ack_data.decode())
+                    print(f"📨 Received ACK {ack_num}")
 
-                    if ack_seq >= base:
-                        base = ack_seq + 1
-                        timer = None  # 重置定时器
+                    if ack_num >= base:
+                        base = ack_num + 1
+                        next_seq_num = base
+                        timer = None
 
-                except socket.timeout:
+                except (socket.timeout, ValueError):
                     pass
 
                 # 超时处理
                 if timer and (time.time() - timer > self.timeout):
-                    print(f"Timeout! Resending from {base}")
-                    next_seq = base  # 回退到窗口起点
+                    print(f"⏰ Timeout! Resending from {base}")
+                    next_seq_num = base
                     timer = None
 
-            print(f"File {filename} transfer completed to {client_addr}")
+            print(f"✅ File {filename} transfer completed to {client_addr}")
 
         except Exception as e:
-            print(f"Transfer error to {client_addr}: {e}")
+            print(f"❌ Transfer error to {client_addr}: {e}")
